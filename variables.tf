@@ -1,32 +1,44 @@
-variable "local_subnet_range" {
-  description = "Local VPC subnet range in CIDR format"
-  type        = string
+variable "requester_name" {
+  description = "Readable alias for requester account name"
+  type = string
+  default = "requester"
 }
 
-variable "local_main_route_table_id" {
-  description = "Local main route table ID used to update access to remote network"
+variable "accepter_name" {
+  description = "Readable alias for accepter account name"
+  type = string
+  default = "requester"
+}
+
+variable "requester_subnet_range" {
+  description = "requester VPC subnet range in CIDR format"
+  type        = list(string)
+}
+
+variable "requester_main_route_table_id" {
+  description = "requester main route table ID used to update access to accepter network"
   type        = string
   default     = ""
 }
 
-variable "remote_subnet_range" {
-  description = "Remote VPC subnet range in CIDR format"
-  type        = string
+variable "accepter_subnet_range" {
+  description = "accepter VPC subnet range in CIDR format"
+  type        = list(string)
 }
 
-variable "remote_main_route_table_id" {
-  description = "Remote main route table ID used to update access to local network"
+variable "accepter_main_route_table_id" {
+  description = "accepter main route table ID used to update access to requester network"
   type        = string
   default     = ""
 }
 
-variable "remote_vpc_id" {
-  description = "Remote VPC ID"
+variable "accepter_vpc_id" {
+  description = "accepter VPC ID"
   type        = string
 }
 
-variable "local_vpc_id" {
-  description = "Local VPC ID"
+variable "requester_vpc_id" {
+  description = "requester VPC ID"
   type        = string
 }
 

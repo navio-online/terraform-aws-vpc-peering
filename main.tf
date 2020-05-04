@@ -1,116 +1,109 @@
-/**
- *
- * AWS VPC Peering Connection Module
- * =================================
- *
- * Terraform module, which creates a peering connection between two VPCs and adds routes to the local VPC.
- *
- * Usage
- * -----
- *
- * ### Single Region/Account Peering
- * **Notice**: You need to declare both providers even with single region peering.
- *
- * ```hc1
- * module "vpc_single_region_peering" {
- *   source = "dcos-terraform/vpc-peering/aws"
- *
- *   providers = {
- *     aws.local = "aws"
- *     aws.remote = "aws"
- *   }
- *
- *   remote_vpc_id       = "vpc-bbbbbbbb"
- *   remote_subnet_range = "10.0.0.0/16"
- *   local_subnet_range  = "10.1.0.0/16"
- *   local_vpc_id        = "vpc-aaaaaaaa"
- *
- *   tags = {
- *     Environment = "prod"
- *   }
- * }
- * ```
- *
- * ### Cross Region/Account Peering
- *
- * ```hc1
- * module "vpc_cross_region_peering" {
- *   source = "dcos-terraform/vpc-peering/aws"
- *
- *   providers = {
- *     aws.local  = "aws.src"
- *     aws.remote = "aws.dst"
- *   }
- *
- *   remote_vpc_id       = "vpc-bbbbbbbb"
- *   remote_subnet_range = "10.0.0.0/16"
- *   local_subnet_range  = "10.1.0.0/16"
- *   local_vpc_id        = "vpc-aaaaaaaa"
- *
- *   tags = {
- *     Environment = "prod"
- *   }
- * }
- *```
- */
-
 # Providers are required because of cross-region
 provider "aws" {
-  alias = "local"
+  alias = "requester"
 }
 
 provider "aws" {
-  alias = "remote"
+  alias = "accepter"
 }
 
-data "aws_region" "remote" {
-  provider = aws.remote
+data "aws_region" "accepter" {
+  provider = aws.accepter
 }
 
-data "aws_vpc" "local" {
-  provider = aws.local
-  id       = "${var.local_vpc_id}"
+data "aws_vpc" "requester" {
+  provider = aws.requester
+  id       = "${var.requester_vpc_id}"
 }
 
-data "aws_vpc" "remote" {
-  provider = aws.remote
-  id       = "${var.remote_vpc_id}"
+data "aws_vpc" "accepter" {
+  provider = aws.accepter
+  id       = "${var.accepter_vpc_id}"
+}
+
+data "aws_caller_identity" "requester" {
+  provider = aws.requester
+}
+
+data "aws_caller_identity" "accepter" {
+  provider = aws.accepter
 }
 
 # Create a route
-resource "aws_route" "local_rt" {
-  provider                  = aws.local
-  route_table_id            = coalesce(var.local_main_route_table_id, data.aws_vpc.local.main_route_table_id)
-  destination_cidr_block    = var.remote_subnet_range
-  vpc_peering_connection_id = aws_vpc_peering_connection.peering.id
+resource "aws_route" "requester_rt" {
+  provider                  = aws.requester
+  count                     = length(var.accepter_subnet_range)
+  route_table_id            = coalesce(var.requester_main_route_table_id, data.aws_vpc.requester.main_route_table_id)
+  destination_cidr_block    = element(var.accepter_subnet_range, count.index)
+  vpc_peering_connection_id = aws_vpc_peering_connection.requester.id
 }
 
 ## Create a route
-resource "aws_route" "remote_rt" {
-  provider                  = aws.remote
-  route_table_id            = coalesce(var.remote_main_route_table_id, data.aws_vpc.remote.main_route_table_id)
-  destination_cidr_block    = var.local_subnet_range
-  vpc_peering_connection_id = aws_vpc_peering_connection.peering.id
+resource "aws_route" "accepter_rt" {
+  provider                  = aws.accepter
+  count                     = length(var.requester_subnet_range)
+  route_table_id            = coalesce(var.accepter_main_route_table_id, data.aws_vpc.accepter.main_route_table_id)
+  destination_cidr_block    = element(var.requester_subnet_range, count.index)
+  vpc_peering_connection_id = aws_vpc_peering_connection_accepter.accepter.vpc_peering_connection_id
 }
 
-resource "aws_vpc_peering_connection" "peering" {
-  provider    = aws.local
-  vpc_id      = var.local_vpc_id
-  peer_vpc_id = var.remote_vpc_id
-  peer_region = data.aws_region.remote.name
+resource "aws_vpc_peering_connection" "requester" {
+  provider    = aws.requester
+  vpc_id      = var.requester_vpc_id
 
-  tags = merge(var.tags, map("Name", "Initiator: VPC Peering between default and remote",
-                                "accepter_vpc", var.remote_vpc_id,
-                                "initiator_vpc", var.local_vpc_id))
+  peer_vpc_id   = var.accepter_vpc_id
+  peer_region   = data.aws_region.accepter.name
+  peer_owner_id = data.aws_caller_identity.accepter.account_id
+
+  tags = merge(
+    var.tags,
+    map("Name", "To ${var.accepter_name}",
+        "requestor_vpc", var.requester_vpc_id,
+        "requestor_owner_id", data.aws_caller_identity.requester.account_id,
+        "accepter_vpc", var.accepter_vpc_id,
+        "accepter_owner_id", data.aws_caller_identity.accepter.account_id,
+    )
+  )
 }
+
+resource "aws_vpc_peering_connection_options" "requester" {
+  provider                  = aws.requester
+
+  depends_on                = [aws_vpc_peering_connection_accepter.accepter]
+
+  vpc_peering_connection_id = aws_vpc_peering_connection.requester.id
+
+  requester {
+    allow_remote_vpc_dns_resolution = true
+  }
+}
+
 
 # Accepter's side of the connection.
-resource "aws_vpc_peering_connection_accepter" "remote" {
-  provider                  = aws.remote
-  vpc_peering_connection_id = aws_vpc_peering_connection.peering.id
+resource "aws_vpc_peering_connection_accepter" "accepter" {
+  provider                  = aws.accepter
+  vpc_peering_connection_id = aws_vpc_peering_connection.requester.id
   auto_accept               = true
 
-  tags = merge(var.tags, map("Name", "Accepter",
-                                "accepter_vpc", var.remote_vpc_id,
-                                "initiator_vpc", var.local_vpc_id))
+  tags = merge(
+    var.tags,
+    map("Name", "From ${var.requester_name}",
+        "requester_vpc", var.requester_vpc_id,
+        "requester_owner_id", data.aws_caller_identity.requester.account_id,
+        "accepter_vpc", var.accepter_vpc_id,
+        "accepter_owner_id", data.aws_caller_identity.accepter.account_id,
+    )
+  )
+}
+
+resource "aws_vpc_peering_connection_options" "accepter" {
+  provider                  = aws.accepter
+
+  depends_on                = [aws_vpc_peering_connection_accepter.accepter]
+  
+  vpc_peering_connection_id = aws_vpc_peering_connection_accepter.accepter.vpc_peering_connection_id
+
+  accepter {
+    allow_remote_vpc_dns_resolution = true
+  }
 }
