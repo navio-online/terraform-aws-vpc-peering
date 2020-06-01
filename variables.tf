@@ -4,9 +4,16 @@ variable "requester_name" {
   default = "requester"
 }
 
+variable "requester_only" {
+  description = "Only requester can be managed by us"
+  type = string
+  default = "none"
+}
+
 variable "requester_vpc_id" {
   description = "requester VPC ID"
   type        = string
+  default = "none"
 }
 
 variable "requester_subnet_ranges" {
@@ -25,6 +32,18 @@ variable "accepter_name" {
   description = "Readable alias for accepter account name"
   type = string
   default = "requester"
+}
+
+variable "accepter_region" {
+  description = "Accepter region"
+  type = string
+  default = "none"
+}
+
+variable "accepter_id" {
+  description = "Accepter account id"
+  type = string
+  default = "none"
 }
 
 variable "accepter_subnet_ranges" {

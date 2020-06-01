@@ -8,6 +8,7 @@ provider "aws" {
 }
 
 data "aws_region" "accepter" {
+  count    = local.is_one_way_only ? 0 : 1
   provider = aws.accepter
 }
 
@@ -17,6 +18,7 @@ data "aws_vpc" "requester" {
 }
 
 data "aws_vpc" "accepter" {
+  count    = local.is_one_way_only ? 0 : 1
   provider = aws.accepter
   id       = "${var.accepter_vpc_id}"
 }
@@ -26,17 +28,21 @@ data "aws_caller_identity" "requester" {
 }
 
 data "aws_caller_identity" "accepter" {
+  count    = local.is_one_way_only ? 0 : 1
   provider = aws.accepter
 }
 
 locals {
-  is_local = (data.aws_caller_identity.requester.account_id == data.aws_caller_identity.accepter.account_id)
+  is_one_way_only = (var.requester_only == "true")
+  accepter_account_id = local.is_one_way_only ? var.accepter_id : data.aws_caller_identity.accepter[0].account_id
+
+  is_local = (!local.is_one_way_only && (data.aws_caller_identity.requester.account_id == local.accepter_account_id))
 
   requester_subnet_ranges = length(var.requester_subnet_ranges) > 0 ? var.requester_subnet_ranges : [data.aws_vpc.requester.cidr_block]
-  accepter_subnet_ranges  = length(var.accepter_subnet_ranges)  > 0 ? var.accepter_subnet_ranges  : [data.aws_vpc.accepter.cidr_block]
+  accepter_subnet_ranges  = length(var.accepter_subnet_ranges)  > 0 ? var.accepter_subnet_ranges  : [data.aws_vpc.accepter[0].cidr_block]
 
   requester_route_table_ids = length(var.requester_route_table_ids) > 0 ? var.requester_route_table_ids : [data.aws_vpc.requester.main_route_table_id]
-  accepter_route_table_ids  = length(var.accepter_route_table_ids)  > 0 ? var.accepter_route_table_ids  : [data.aws_vpc.accepter.main_route_table_id]
+  accepter_route_table_ids  = length(var.accepter_route_table_ids)  > 0 ? var.accepter_route_table_ids  : [data.aws_vpc.accepter[0].main_route_table_id]
 
   requester_routes = [
     for pair in setproduct(local.accepter_subnet_ranges, local.requester_route_table_ids) : {
@@ -45,7 +51,7 @@ locals {
     }
   ]
 
-  accepter_routes = [
+  accepter_routes = local.is_one_way_only ? [] : [
     for pair in setproduct(local.requester_subnet_ranges, local.accepter_route_table_ids) : {
       cidr_block     = pair[0]
       route_table_id = pair[1]
@@ -82,8 +88,8 @@ resource "aws_vpc_peering_connection" "requester" {
 
   vpc_id        = var.requester_vpc_id
   peer_vpc_id   = var.accepter_vpc_id
-  peer_region   = local.is_local ? null : data.aws_region.accepter.name
-  peer_owner_id = data.aws_caller_identity.accepter.account_id
+  peer_region   = local.is_local ? null : (local.is_one_way_only ? var.accepter_region : data.aws_region.accepter[0].name)
+  peer_owner_id = local.accepter_account_id
   auto_accept   = local.is_local
 
   dynamic requester {
@@ -102,17 +108,17 @@ resource "aws_vpc_peering_connection" "requester" {
 
   tags = merge(
     var.tags,
-    map("Name", local.is_local ?  "Local ${var.requester_name} to ${var.accepter_name}" : "To ${var.accepter_name}",
+    map("Name", local.is_local ?  "Local ${var.requester_name} to ${var.accepter_name}" : "Requester: from ${var.requester_name} to ${var.accepter_name}",
         "requester_vpc", var.requester_vpc_id,
         "requester_owner_id", data.aws_caller_identity.requester.account_id,
         "accepter_vpc", var.accepter_vpc_id,
-        "accepter_owner_id", data.aws_caller_identity.accepter.account_id,
+        "accepter_owner_id", local.accepter_account_id,
     )
   )
 }
 
 resource "aws_vpc_peering_connection_options" "requester" {
-  count      = local.is_local ? 0 : 1
+  count      = (local.is_local || local.is_one_way_only) ? 0 : 1
   provider   = aws.requester
   depends_on = [aws_vpc_peering_connection_accepter.accepter]
 
@@ -126,7 +132,7 @@ resource "aws_vpc_peering_connection_options" "requester" {
 
 # Accepter's side of the connection.
 resource "aws_vpc_peering_connection_accepter" "accepter" {
-  count       = local.is_local ? 0 : 1
+  count       = (local.is_local || local.is_one_way_only) ? 0 : 1
   provider    = aws.accepter
   auto_accept = true
 
@@ -134,17 +140,17 @@ resource "aws_vpc_peering_connection_accepter" "accepter" {
 
   tags = merge(
     var.tags,
-    map("Name", "From ${var.requester_name}",
+    map("Name", "Accepter: from ${var.requester_name} to ${var.accepter_name}",
         "requester_vpc", var.requester_vpc_id,
         "requester_owner_id", data.aws_caller_identity.requester.account_id,
         "accepter_vpc", var.accepter_vpc_id,
-        "accepter_owner_id", data.aws_caller_identity.accepter.account_id,
+        "accepter_owner_id", local.accepter_account_id,
     )
   )
 }
 
 resource "aws_vpc_peering_connection_options" "accepter" {
-  count      = local.is_local ? 0 : 1
+  count      = (local.is_local || local.is_one_way_only) ? 0 : 1
   provider   = aws.accepter
   depends_on = [ aws_vpc_peering_connection_accepter.accepter ]
   
